@@ -1,0 +1,128 @@
+#!/bin/bash
+#
+# this skeletion is from
+# https://github.com/unusedPhD/bash-skeleton/blob/master/starter.sh
+#
+# further reading
+# https://bertvv.github.io/cheat-sheets/Bash.html
+# https://stackoverflow.com/questions/402377/using-getopts-to-process-long-and-short-command-line-options
+
+#
+# TODO keyfile muss vorhanden sein, -k sudo root, sonst passwd fuer root
+# 
+
+#set -euo pipefail
+set -exo pipefail
+
+if [[ -z "$1" ]]; then
+    echo "
+    usage: $0 machine 
+      -f --force  replaces existing machine
+      
+    "
+    exit 1
+fi
+
+export distro='debian'
+export flavour='bullseye'
+#TODO SUDO_USER ist murks
+export user=$SUDO_USER
+export keyfile="/home/${user}/.ssh/id_rsa.pub"
+export PROXY='http://erle:3142/'
+export MDIR=/var/lib/machines
+export MNAME=$1
+
+
+export this_path=$(readlink -f $0)        ## Path of this file including filename
+export dir_name=`dirname ${this_path}`    ## Dir where this file is
+export myname=`basename ${this_path}`     ## file name of this script.
+export logger="${myname}.log"
+
+function usage {
+  echo "
+  usage: $myname hostname [options]
+  -h           optional  Print this help message
+  -q           optional  Suppress log messages on screen, just log them.
+  -f           optional  Force
+  -k <keyfile> optional  ssh key for root
+               default is ~/.ssh/id_rsa.pub
+  -i <file>    required  input file
+  -l <log>     optional  print errors and output to this file.
+               default ${myname}.log
+  -o <outdir>  optional  store output here.
+               default is <put ur default here>"
+  exit 1
+}
+
+function logit {
+  if [[ $quiet == "true" ]]
+  then
+    echo $1 1>> $logger
+  else
+    echo $1 |tee -a $logger
+  fi
+}
+
+logit "Initializing `date`"
+
+while getopts :hqf:o:l: args
+do
+  case $args in
+  h) usage ;;
+  q) quiet='true' ;; ## Suppress messages, just log them.
+  f) force='true' ;;
+  l) logger="$OPTARG" ;;
+  o) outdir="$OPTARG" ;;
+  :) logit "The argument -$OPTARG requires a parameter" ;;
+  *) usage ;;
+  esac
+done
+
+## Do parameter validations here.
+## Below is an example.
+if [[ ! -r $infile ]]
+then
+  echo ""
+  logit "Input file $infile does not exist or it is not readable !!"
+fi
+
+if [[ ! -z "$2" ]]; then
+    MDIR=$2
+fi    
+MM=$MDIR/$MNAME
+
+
+if [[ -z "$MNAME" ]]; then
+    usage
+fi
+
+if [[ -e "$MM" ]]; then
+    logit "Destination exists and not enough force..."
+    exit 1
+fi
+
+#
+# hostname zu IP wird von systemd-network und dem NSS modul von machinectl
+# gehandlet?  /etc/nsswitch.conf mymachines
+#
+
+
+function main {
+    debootstrap --include systemd-container,openssh-server buster $MM \
+		$PROXY"deb.debian.org/debian/"
+
+    echo 'Acquire::http { Proxy "'$PROXY'"; };' > \
+	 $MM/etc/apt/apt.conf.d/01aptcacherng
+    sed -i 's/https/http/' $MM/etc/apt/sources.list
+    echo $MNAME > $MM/etc/hostname
+
+    #ssh-key for root access
+    mkdir $MM/root/.ssh
+    cp --preserve=mode ${keyfile} $MM/root/.ssh/authorized_keys
+    #TODO /etc/hosts
+    systemd-nspawn -UM $MNAME systemctl enable systemd-networkd
+    systemctl enable systemd-nspawn@$MNAME
+    systemctl start systemd-nspawn@$MNAME
+}
+
+main "$@"
